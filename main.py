@@ -1,3 +1,5 @@
+import http.server, socketserver, threading, os
+threading.Thread(target=lambda: socketserver.TCPServer(("", int(os.getenv("PORT", 10000))), http.server.SimpleHTTPRequestHandler).serve_forever(), daemon=True).start()
 import asyncio
 import os
 from aiogram import Bot, Dispatcher, types
