@@ -1,69 +1,98 @@
-import http.server, socketserver, threading, os
-threading.Thread(target=lambda: socketserver.TCPServer(("", int(os.getenv("PORT", 10000))), http.server.SimpleHTTPRequestHandler).serve_forever(), daemon=True).start()
 import asyncio
-import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
+from aiogram.filters import CommandStart, CommandObject
 
-# Считываем токен и ID из настроек хостинга (для безопасности)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
-
-# ВСТАВЬТЕ СЮДА ВАШИ ID СТИКЕРОВ ИЗ ЭТАПА 1
-STICKER_WELCOME = "CAACAgEAAxkBAAER4YJqoyUAARC6OeaMt8tRFy1qAUHKFm4AAhUCAAKh3uBHc1iFIXcgGWk9BA"  # Приветственный (для пользователей)
-STICKER_SUCCESS = "CAACAgIAAxkBAAER4YRqoyVHfd3w5s_0WfFX3lSITZ90UAACDAIAAmkSAAImRL7VT3TbJD0E"  # Успешная отправка (принято/голубь/галочка)
-STICKER_ADMIN = "CAACAgIAAxkBAAER4YZqoyV8Hqy6B_8p_kQYZjTMH5P7rwACvGEAArpkuUrtD-vhjvGwET0E"    # Для вас (босс/шпион/контроль)
+BOT_TOKEN = "8807187343:AAEsVZ9ZDVXSCimengil2d8fC_JwEOBnC_4"
+ADMIN_ID = 8846865308
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# База данных в памяти: кто кому сейчас пишет и кто от кого получает ответы
+user_links = {}     # ID отправителя -> ID получателя
+reply_tracker = {}  # ID сообщения в чате -> ID исходного отправителя
+
 @dp.message(CommandStart())
-async def start_cmd(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
-        if STICKER_ADMIN and not STICKER_ADMIN.startswith("СЮДА"):
-            await message.answer_sticker(STICKER_ADMIN)
-        await message.answer("✨ **Режим Администратора активен**\n\nСюда будут поступать все входящие сообщения.")
+async def cmd_start(message: Message, command: CommandObject):
+    bot_info = await bot.get_me()
+    user_id = message.from_user.id
+    
+    # Если перешли по чьей-то анонимной ссылке
+    if command.args:
+        target_id = int(command.args)
+        if target_id == user_id:
+            await message.answer("❌ Нельзя писать самому себе!")
+            return
+            
+        user_links[user_id] = target_id
+        await message.answer("🎯 Вы перешли по анонимной ссылке!\nОтправьте сообщение, фото или голосовое — оно уйдёт 100% анонимно.")
     else:
-        if STICKER_WELCOME and not STICKER_WELCOME.startswith("СЮДА"):
-            await message.answer_sticker(STICKER_WELCOME)
+        # Генерация собственной ссылки для любого пользователя
+        my_link = f"https://t.me/{bot_info.username}?start={user_id}"
         await message.answer(
-            "🔮 **Добро пожаловать!**\n\n"
-            "Здесь вы можете задать любой вопрос или оставить сообщение абсолютно анонимно.\n\n"
-            "👇 *Просто напишите ваш текст или отправьте файл ниже:*"
+            f"👋 Это бот анонимных вопросов!\n\n"
+            f"🔗 **Ваша личная ссылка:**\n`{my_link}`\n\n"
+            f"Разместите её у себя в профиле, чтобы получать анонимные сообщения!"
         )
 
 @dp.message()
-async def forward_to_admin(message: types.Message):
-    # Стелс-режим для вас (ответы никому не уходят)
-    if message.from_user.id == ADMIN_ID:
-        await message.answer("🔒 *[Стелс-режим]* Сообщение сохранено приватным и никому не отправлено.")
+async def handle_messages(message: Message):
+    sender_id = message.from_user.id
+
+    # --- ЛОГИКА ОТВЕТА НА СООБЩЕНИЕ (REPLY) ---
+    if message.reply_to_message:
+        reply_msg_id = message.reply_to_message.message_id
+        original_sender = reply_tracker.get(reply_msg_id)
+        
+        if original_sender:
+            try:
+                # Отправляем ответ анонимно (без раскрытия того, кто отвечает)
+                await message.copy_to(chat_id=original_sender)
+                await message.answer("✅ Ваш ответ анонимно отправлен!")
+            except Exception:
+                await message.answer("❌ Не удалось доставить ответ (пользователь заблокировал бота).")
+        else:
+            await message.answer("⚠️ Не удалось найти адресата для этого ответа.")
         return
 
-    user = message.from_user
-    username = f"@{user.username}" if user.username else "отсутствует"
+    # --- ЛОГИКА ОТПРАВКИ НОВОГО ВОПРОСА ---
+    # Определяем, кому предназначается сообщение
+    target_id = user_links.get(sender_id)
     
-    # Красивая карточка входящего сообщения
-    user_card = (
-        "📥 **НОВОЕ ВХОДЯЩЕЕ СООБЩЕНИЕ**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 **Отправитель:** {user.full_name}\n"
-        f"🏷 **Юзернейм:** {username}\n"
-        f"🆔 **ID:** `{user.id}`\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "👇 **Содержимое:**"
-    )
+    # Если человек не переходил по ссылке, но пишет в бота — по умолчанию отправляем ВАМ (Админу)
+    if not target_id:
+        target_id = ADMIN_ID
 
-    # Пересылка вам в личку
-    await bot.send_message(chat_id=ADMIN_ID, text=user_card, parse_mode="Markdown")
-    await message.copy_to(chat_id=ADMIN_ID)
+    # Формируем подпись
+    if target_id == ADMIN_ID:
+        # Для ВАС: показываем имя, юзернейм и ID отправителя
+        caption_text = (
+            f"📩 **ВХОДЯЩЕЕ СООБЩЕНИЕ (Для Админа)**\n"
+            f"👤 От: {message.from_user.full_name}\n"
+            f"🔗 Юзернейм: @{message.from_user.username or 'отсутствует'}\n"
+            f"🆔 ID: `{sender_id}`"
+        )
+    else:
+        # Для ОБЫЧНЫХ пользователей: ПОЛНАЯ анонимность (никаких ID и имён)
+        caption_text = "📩 **Вам пришло новое анонимное сообщение!**\n\n*(Ответьте на это сообщение, чтобы отправить ответ)*"
 
-    # Ответ пользователю
-    if STICKER_SUCCESS and not STICKER_SUCCESS.startswith("СЮДА"):
-        await message.answer_sticker(STICKER_SUCCESS)
-    await message.answer("🕊 *Ваше сообщение успешно отправлено!*")
+    try:
+        # Отправляем копию сообщения получателю
+        if message.text and target_id != ADMIN_ID:
+            sent_msg = await bot.send_message(chat_id=target_id, text=f"{caption_text}\n\n💬 {message.text}")
+        else:
+            sent_msg = await message.copy_to(chat_id=target_id, caption=caption_text if message.caption is None else f"{caption_text}\n\n{message.caption}")
+
+        # Запоминаем ID сообщения, чтобы работала кнопка Reply (Ответ)
+        reply_tracker[sent_msg.message_id] = sender_id
+        await message.answer("🚀 Сообщение анонимно доставлено!")
+    except Exception:
+        await message.answer("❌ Не удалось отправить сообщение.")
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
