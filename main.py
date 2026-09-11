@@ -3,96 +3,102 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart, CommandObject
 
+# Жестко прописанные данные
 BOT_TOKEN = "8807187343:AAEsVZ9ZDVXSCimengil2d8fC_JwEOBnC_4"
 ADMIN_ID = 8846865308
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# База данных в памяти: кто кому сейчас пишет и кто от кого получает ответы
-user_links = {}     # ID отправителя -> ID получателя
-reply_tracker = {}  # ID сообщения в чате -> ID исходного отправителя
+user_links = {}     
+reply_tracker = {}  
 
+# 1. ОБРАБОТКА КОМАНДЫ /START
 @dp.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject):
     bot_info = await bot.get_me()
     user_id = message.from_user.id
+    my_link = f"https://t.me/{bot_info.username}?start={user_id}"
     
-    # Если перешли по чьей-то анонимной ссылке
+    # ПРОВЕРКА: ЕСЛИ ПИШЕТЕ ВЫ (АДМИН)
+    if user_id == ADMIN_ID:
+        await message.answer(
+            f"👑 **ВЫ АВТОРИЗОВАНЫ КАК АДМИНИСТРАТОР**\n\n"
+            f"🔗 **Ваша личная анонимная ссылка:**\n`{my_link}`\n\n"
+            f"Все вопросы, приходящие по этой ссылке, будут содержать данные отправителя (Имя, Username, ID)."
+        )
+        return
+
+    # ЕСЛИ ПИШЕТ ОБЫЧНЫЙ ПОЛЬЗОВАТЕЛЬ
     if command.args:
         target_id = int(command.args)
         if target_id == user_id:
-            await message.answer("❌ Нельзя писать самому себе!")
+            await message.answer("Нельзя писать самому себе.")
             return
             
         user_links[user_id] = target_id
-        await message.answer("🎯 Вы перешли по анонимной ссылке!\nОтправьте сообщение, фото или голосовое — оно уйдёт 100% анонимно.")
+        await message.answer("🎯 Вы перешли по анонимной ссылке!\nЗадайте ваш вопрос...")
     else:
-        # Генерация собственной ссылки для любого пользователя
-        my_link = f"https://t.me/{bot_info.username}?start={user_id}"
         await message.answer(
             f"👋 Это бот анонимных вопросов!\n\n"
-            f"🔗 **Ваша личная ссылка:**\n`{my_link}`\n\n"
-            f"Разместите её у себя в профиле, чтобы получать анонимные сообщения!"
+            f"🔗 **Ваша анонимная ссылка:**\n`{my_link}`\n\n"
+            f"Разместите её в профиле, чтобы получать вопросы!"
         )
 
+# 2. ОБРАБОТКА ВСЕХ СООБЩЕНИЙ
 @dp.message()
 async def handle_messages(message: Message):
     sender_id = message.from_user.id
 
-    # --- ЛОГИКА ОТВЕТА НА СООБЩЕНИЕ (REPLY) ---
+    # --- ОТВЕТ НА СООБЩЕНИЕ (REPLY) ---
     if message.reply_to_message:
         reply_msg_id = message.reply_to_message.message_id
         original_sender = reply_tracker.get(reply_msg_id)
         
         if original_sender:
             try:
-                # Отправляем ответ анонимно (без раскрытия того, кто отвечает)
                 await message.copy_to(chat_id=original_sender)
-                await message.answer("✅ Ваш ответ анонимно отправлен!")
+                await message.answer("✅ Ответ отправлен")
             except Exception:
-                await message.answer("❌ Не удалось доставить ответ (пользователь заблокировал бота).")
+                await message.answer("❌ Ошибка доставки")
         else:
-            await message.answer("⚠️ Не удалось найти адресата для этого ответа.")
+            await message.answer("⚠️ Адресат не найден")
         return
 
-    # --- ЛОГИКА ОТПРАВКИ НОВОГО ВОПРОСА ---
-    # Определяем, кому предназначается сообщение
+    # --- ОТПРАВКА ВОПРОСА ---
     target_id = user_links.get(sender_id)
-    
-    # Если человек не переходил по ссылке, но пишет в бота — по умолчанию отправляем ВАМ (Админу)
     if not target_id:
         target_id = ADMIN_ID
 
-    # Формируем подпись
+    # Если сообщение предназначено ВАМ (Админу) — показываем данные
     if target_id == ADMIN_ID:
-        # Для ВАС: показываем имя, юзернейм и ID отправителя
         caption_text = (
-            f"📩 **ВХОДЯЩЕЕ СООБЩЕНИЕ (Для Админа)**\n"
-            f"👤 От: {message.from_user.full_name}\n"
-            f"🔗 Юзернейм: @{message.from_user.username or 'отсутствует'}\n"
-            f"🆔 ID: `{sender_id}`"
+            f"📩 **НОВОЕ СООБЩЕНИЕ (Для Админа)**\n"
+            f"👤 **От:** {message.from_user.full_name}\n"
+            f"🔗 **Юзернейм:** @{message.from_user.username or 'отсутствует'}\n"
+            f"🆔 **ID:** `{sender_id}`"
         )
     else:
-        # Для ОБЫЧНЫХ пользователей: ПОЛНАЯ анонимность (никаких ID и имён)
-        caption_text = "📩 **Вам пришло новое анонимное сообщение!**\n\n*(Ответьте на это сообщение, чтобы отправить ответ)*"
+        # Для остальных людей — полная анонимность
+        caption_text = "📩 **Новое анонимное сообщение**\n*(Ответьте на сообщение, чтобы отправить ответ)*"
 
     try:
-        # Отправляем копию сообщения получателю
         if message.text and target_id != ADMIN_ID:
             sent_msg = await bot.send_message(chat_id=target_id, text=f"{caption_text}\n\n💬 {message.text}")
         else:
-            sent_msg = await message.copy_to(chat_id=target_id, caption=caption_text if message.caption is None else f"{caption_text}\n\n{message.caption}")
+            sent_msg = await message.copy_to(
+                chat_id=target_id, 
+                caption=caption_text if message.caption is None else f"{caption_text}\n\n{message.caption}"
+            )
 
-        # Запоминаем ID сообщения, чтобы работала кнопка Reply (Ответ)
         reply_tracker[sent_msg.message_id] = sender_id
-        await message.answer("🚀 Сообщение анонимно доставлено!")
+        await message.answer("✅ Отправлено")
     except Exception:
-        await message.answer("❌ Не удалось отправить сообщение.")
+        await message.answer("❌ Не удалось отправить")
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
